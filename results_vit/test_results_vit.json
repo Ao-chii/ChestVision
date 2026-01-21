@@ -1,0 +1,38 @@
+{
+    "model": "ViT_Transformer",
+    "test_auc": 0.731565211441055,
+    "test_f1": 0.03151779544610087,
+    "test_loss": 0.1584744769607752,
+    "per_disease_auc": {
+        "Atelectasis": 0.7506143897668455,
+        "Cardiomegaly": 0.9013262495080677,
+        "Consolidation": 0.7399557559771972,
+        "Edema": 0.8696914018457427,
+        "Effusion": 0.8191330600398725,
+        "Emphysema": 0.6577951456402766,
+        "Fibrosis": 0.734651087258307,
+        "Hernia": 0.6025418833044482,
+        "Infiltration": 0.7206649955323142,
+        "Mass": 0.7167326640639524,
+        "Nodule": 0.654615884359266,
+        "Pleural_Thickening": 0.7093840586574713,
+        "Pneumonia": 0.6640897125688,
+        "Pneumothorax": 0.7007166716522086
+    },
+    "per_disease_f1": {
+        "Atelectasis": 0.042682926829268296,
+        "Cardiomegaly": 0.20224719101123595,
+        "Consolidation": 0.0,
+        "Edema": 0.0,
+        "Effusion": 0.19631901840490798,
+        "Emphysema": 0.0,
+        "Fibrosis": 0.0,
+        "Hernia": 0.0,
+        "Infiltration": 0.0,
+        "Mass": 0.0,
+        "Nodule": 0.0,
+        "Pleural_Thickening": 0.0,
+        "Pneumonia": 0.0,
+        "Pneumothorax": 0.0
+    }
+}
