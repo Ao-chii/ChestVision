@@ -28,8 +28,8 @@ CURRENT_DIR = os.path.dirname(__file__)
 CHESTVISION_DIR = os.path.join(CURRENT_DIR, "ChestVision")
 if CHESTVISION_DIR not in sys.path:
     sys.path.append(CHESTVISION_DIR)
-# Import DacNet-CB+ module (renamed from dacnet_cb+.py)
-import dacnet_cb_plus as dacnet_cb
+# Import DacNet-CB+ module
+import dacnet_cb as dacnet_cb
 
 # ==================== 配置 ====================
 CONFIG = {
@@ -108,7 +108,7 @@ df = df[df["Image Index"].isin(existing_images)]
 df["Patient ID"] = df["Image Index"].apply(lambda x: int(x.split("_")[0]))
 
 print("Loading dataset split...")
-split_dir = "./dataset_splits_xhj"
+split_dir = "./dataset_splits"
 if not os.path.exists(split_dir):
     print(f"Error: {split_dir}/ not found")
     print("Please run: python split_dataset.py first")
