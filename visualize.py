@@ -1,11 +1,14 @@
 """
-综合可视化脚本 - DacNet vs Baseline
+综合可视化脚本 - DacNet vs DacNet-CB+ vs Baseline
 生成：
-1. ROC曲线（14个疾病 + 平均）
-2. 混淆矩阵（5个代表性疾病）
-3. 训练曲线（Loss、AUC、F1）
+1. ROC曲线（14个疾病 + 平均）- 3模型对比
+2. 混淆矩阵（5个代表性疾病）- 3模型对比
+3. 训练曲线（Loss、AUC、F1）- 3模型对比
+4. 模型对比表格（CSV）
 """
 import os
+import sys
+import re
 import pandas as pd
 import numpy as np
 import torch
@@ -21,22 +24,33 @@ import seaborn as sns
 from tqdm import tqdm
 import json
 
+CURRENT_DIR = os.path.dirname(__file__)
+CHESTVISION_DIR = os.path.join(CURRENT_DIR, "ChestVision")
+if CHESTVISION_DIR not in sys.path:
+    sys.path.append(CHESTVISION_DIR)
+# Import DacNet-CB+ module (renamed from dacnet_cb+.py)
+import dacnet_cb_plus as dacnet_cb
+
 # ==================== 配置 ====================
 CONFIG = {
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "batch_size": 16,
     "num_workers": 4,
-    "images_dir": "/mnt/data4T-2/xhj/images",
-    "csv_file": "/mnt/data4T-2/xhj/filtered_labels.csv",
+    "images_dir": "../../autodl-tmp/chestxray/images",
+    "csv_file": "../task/filtered_labels.csv",
     "seed": 42,
 
     # 模型路径
     "dacnet_checkpoint_dir": "./checkpoints",
+    "dacnet_cb_checkpoint_dir": "./checkpoints_cb",
     "baseline_checkpoint_dir": "./checkpoints_baseline",
 
     # 结果路径
     "dacnet_results_dir": "./results",
+    "dacnet_cb_results_dir": "./results_cb",
     "baseline_results_dir": "./results_baseline",
+
+
 
     # 输出路径
     "output_dir": "./visualizations",
@@ -89,14 +103,12 @@ print("\nLoading test set...")
 df = pd.read_csv(CONFIG["csv_file"])
 images_dir = CONFIG["images_dir"]
 existing_images = set(os.listdir(images_dir))
-df = df[df['Image Index'].isin(existing_images)]
+df = df[df["Image Index"].isin(existing_images)]
 
-# Extract Patient ID
-df['Patient ID'] = df['Image Index'].apply(lambda x: int(x.split('_')[0]))
+df["Patient ID"] = df["Image Index"].apply(lambda x: int(x.split("_")[0]))
 
-# Load pre-split dataset (same as training)
 print("Loading dataset split...")
-split_dir = "./dataset_splits"
+split_dir = "./dataset_splits_xhj"
 if not os.path.exists(split_dir):
     print(f"Error: {split_dir}/ not found")
     print("Please run: python split_dataset.py first")
@@ -105,7 +117,7 @@ if not os.path.exists(split_dir):
 test_patients = np.load(os.path.join(split_dir, "test_patients.npy"))
 print(f"✓ Dataset split loaded (test={len(test_patients)} patients)")
 
-test_df = df[df['Patient ID'].isin(test_patients)].reset_index(drop=True)
+test_df = df[df["Patient ID"].isin(test_patients)].reset_index(drop=True)
 
 print(f"Test set: {len(test_df)} images, {len(test_patients)} patients")
 
@@ -116,6 +128,18 @@ transform_dacnet = transforms.Compose([
     transforms.CenterCrop(224),
     transforms.ToTensor(),
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+
+# DacNet-CB+ transform (320px input)
+image_size_cb = dacnet_cb.CONFIG["image_size"]
+transform_dacnet_cb = transforms.Compose([
+    transforms.Resize(int(image_size_cb * 1.1)),
+    transforms.CenterCrop(image_size_cb),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225],
+    ),
 ])
 
 # Baseline: 只 Resize(224)，没有CenterCrop
@@ -130,17 +154,28 @@ def load_model_and_predict(checkpoint_dir, model_name, transform):
     """Load model and predict on test set with specific transform"""
     print(f"\nLoading {model_name} model...")
 
-    # Load best checkpoint
-    checkpoint_files = [f for f in os.listdir(checkpoint_dir) if f.startswith('best_model_')]
+    checkpoint_files = [f for f in os.listdir(checkpoint_dir) if f.startswith("best_model_")]
     if not checkpoint_files:
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_dir}")
 
-    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_files[0])
+    def _extract_epoch(name: str) -> int:
+        m = re.search(r"epoch(\d+)", name)
+        if m:
+            return int(m.group(1))
+        return -1
+
+    checkpoint_files_sorted = sorted(checkpoint_files, key=_extract_epoch)
+    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_files_sorted[-1])
     print(f"Loading: {checkpoint_path}")
 
-    # Build model
-    model = densenet121(weights=DenseNet121_Weights.IMAGENET1K_V1)
-    model.classifier = nn.Linear(model.classifier.in_features, 14)
+    if model_name == "DacNet-CB+":
+        model = dacnet_cb.build_model(
+            num_classes=len(disease_list),
+            backbone_name=dacnet_cb.CONFIG["backbone"],
+        )
+    else:
+        model = densenet121(weights=DenseNet121_Weights.IMAGENET1K_V1)
+        model.classifier = nn.Linear(model.classifier.in_features, 14)
     model.load_state_dict(torch.load(checkpoint_path, map_location=CONFIG["device"]))
     model = model.to(CONFIG["device"])
     model.eval()
@@ -175,6 +210,11 @@ def load_model_and_predict(checkpoint_dir, model_name, transform):
 labels_true, probs_dacnet = load_model_and_predict(
     CONFIG["dacnet_checkpoint_dir"], "DacNet", transform_dacnet
 )
+
+labels_true, probs_dacnet_cb = load_model_and_predict(
+    CONFIG["dacnet_cb_checkpoint_dir"], "DacNet-CB+", transform_dacnet_cb
+)
+
 _, probs_baseline = load_model_and_predict(
     CONFIG["baseline_checkpoint_dir"], "Baseline", transform_baseline
 )
@@ -182,7 +222,7 @@ _, probs_baseline = load_model_and_predict(
 # ==================== 1. ROC Curves ====================
 print("\nGenerating ROC curves...")
 
-def plot_roc_curves(labels, probs_dacnet, probs_baseline, disease_list, output_path):
+def plot_roc_curves(labels, probs_dacnet, probs_dacnet_cb, probs_baseline, disease_list, output_path):
     """Plot ROC curve comparison"""
     fig, axes = plt.subplots(4, 4, figsize=(20, 16))
     axes = axes.ravel()
@@ -195,12 +235,17 @@ def plot_roc_curves(labels, probs_dacnet, probs_baseline, disease_list, output_p
         fpr_d, tpr_d, _ = roc_curve(labels[:, i], probs_dacnet[:, i])
         auc_d = auc(fpr_d, tpr_d)
 
+        # DacNet-CB+ ROC
+        fpr_cb, tpr_cb, _ = roc_curve(labels[:, i], probs_dacnet_cb[:, i])
+        auc_cb = auc(fpr_cb, tpr_cb)
+
         # Baseline ROC
         fpr_b, tpr_b, _ = roc_curve(labels[:, i], probs_baseline[:, i])
         auc_b = auc(fpr_b, tpr_b)
 
         # Plot
         ax.plot(fpr_d, tpr_d, 'b-', linewidth=2, label=f'DacNet (AUC={auc_d:.3f})')
+        ax.plot(fpr_cb, tpr_cb, 'g-', linewidth=2, label=f'DacNet-CB+ (AUC={auc_cb:.3f})')
         ax.plot(fpr_b, tpr_b, 'r--', linewidth=2, label=f'Baseline (AUC={auc_b:.3f})')
         ax.plot([0, 1], [0, 1], 'k--', linewidth=1, alpha=0.3)
 
@@ -218,13 +263,13 @@ def plot_roc_curves(labels, probs_dacnet, probs_baseline, disease_list, output_p
     plt.close()
 
 plot_roc_curves(
-    labels_true, probs_dacnet, probs_baseline, disease_list,
+    labels_true, probs_dacnet, probs_dacnet_cb, probs_baseline, disease_list,
     os.path.join(CONFIG["output_dir"], "roc_curves_all_diseases.png")
 )
 
 # Plot average ROC curve
 print("\nGenerating average ROC curve...")
-def plot_average_roc(labels, probs_dacnet, probs_baseline, output_path):
+def plot_average_roc(labels, probs_dacnet, probs_dacnet_cb, probs_baseline, output_path):
     """Plot average ROC curve (Macro-Average)"""
     from scipy import interpolate
 
@@ -245,6 +290,19 @@ def plot_average_roc(labels, probs_dacnet, probs_baseline, output_path):
     mean_tpr_d[-1] = 1.0
     mean_auc_d = np.mean(aucs_d)
 
+    # DacNet-CB+ macro-average
+    tprs_cb = []
+    aucs_cb = []
+    for i in range(labels.shape[1]):
+        fpr, tpr, _ = roc_curve(labels[:, i], probs_dacnet_cb[:, i])
+        tprs_cb.append(np.interp(mean_fpr, fpr, tpr))
+        tprs_cb[-1][0] = 0.0
+        aucs_cb.append(auc(fpr, tpr))
+
+    mean_tpr_cb = np.mean(tprs_cb, axis=0)
+    mean_tpr_cb[-1] = 1.0
+    mean_auc_cb = np.mean(aucs_cb)
+
     # Baseline macro-average
     tprs_b = []
     aucs_b = []
@@ -260,6 +318,7 @@ def plot_average_roc(labels, probs_dacnet, probs_baseline, output_path):
 
     plt.figure(figsize=(8, 6))
     plt.plot(mean_fpr, mean_tpr_d, 'b-', linewidth=3, label=f'DacNet (AUC={mean_auc_d:.4f})')
+    plt.plot(mean_fpr, mean_tpr_cb, 'g-', linewidth=3, label=f'DacNet-CB+ (AUC={mean_auc_cb:.4f})')
     plt.plot(mean_fpr, mean_tpr_b, 'r--', linewidth=3, label=f'Baseline (AUC={mean_auc_b:.4f})')
     plt.plot([0, 1], [0, 1], 'k--', linewidth=1, alpha=0.5)
 
@@ -276,17 +335,20 @@ def plot_average_roc(labels, probs_dacnet, probs_baseline, output_path):
     plt.close()
 
 plot_average_roc(
-    labels_true, probs_dacnet, probs_baseline,
+    labels_true, probs_dacnet, probs_dacnet_cb, probs_baseline,
     os.path.join(CONFIG["output_dir"], "roc_curve_average.png")
 )
 
 # ==================== 2. Confusion Matrices ====================
 print("\nGenerating confusion matrices...")
 
-# Load optimal thresholds
 with open(os.path.join(CONFIG["dacnet_results_dir"], "test_results.json"), "r") as f:
     dacnet_results = json.load(f)
 dacnet_thresholds = [dacnet_results["optimal_thresholds"][d] for d in disease_list]
+
+with open(os.path.join(CONFIG["dacnet_cb_results_dir"], "test_results_cb.json"), "r") as f:
+    dacnet_cb_results = json.load(f)
+dacnet_cb_thresholds = [dacnet_cb_results["optimal_thresholds"][d] for d in disease_list]
 
 with open(os.path.join(CONFIG["baseline_results_dir"], "test_results_baseline.json"), "r") as f:
     baseline_results = json.load(f)
@@ -296,6 +358,7 @@ baseline_thresholds = [baseline_results["optimal_thresholds"][d] for d in diseas
 # Based on sample count and AUC
 disease_counts = labels_true.sum(axis=0)
 disease_aucs_dacnet = [dacnet_results["per_disease_auc"][d] for d in disease_list]
+disease_aucs_dacnet_cb = [dacnet_cb_results["per_disease_auc"][d] for d in disease_list]
 
 # Select: most samples, least samples, highest AUC, lowest AUC, median AUC
 indices = {
@@ -306,14 +369,29 @@ indices = {
     "Median AUC": int(np.argsort(disease_aucs_dacnet)[len(disease_aucs_dacnet)//2])
 }
 
+indices_cb = {
+    "Most Samples": int(np.argmax(disease_counts)),
+    "Least Samples": int(np.argmin(disease_counts[disease_counts > 0])),  # Exclude 0 samples
+    "Highest AUC": int(np.argmax(disease_aucs_dacnet_cb)),
+    "Lowest AUC": int(np.argmin(disease_aucs_dacnet_cb)),
+    "Median AUC": int(np.argsort(disease_aucs_dacnet_cb)[len(disease_aucs_dacnet_cb)//2])
+}
+
 selected_diseases = {k: disease_list[v] for k, v in indices.items()}
-print(f"\nSelected representative diseases:")
+print(f"\nSelected representative diseases (DacNet):")
 for desc, disease in selected_diseases.items():
     idx = disease_list.index(disease)
     print(f"  {desc}: {disease} (samples={int(disease_counts[idx])}, AUC={disease_aucs_dacnet[idx]:.3f})")
 
+selected_diseases_cb = {k: disease_list[v] for k, v in indices_cb.items()}
+print(f"\nSelected representative diseases (DacNet-CB+):")
+for desc, disease in selected_diseases_cb.items():
+    idx = disease_list.index(disease)
+    print(f"  {desc}: {disease} (samples={int(disease_counts[idx])}, AUC={disease_aucs_dacnet_cb[idx]:.3f})")
+
 def plot_confusion_matrices(labels, probs_dacnet, probs_baseline,
-                            selected_indices, disease_list, thresholds_d, thresholds_b, output_path):
+                            selected_indices,
+                            disease_list, thresholds_d,thresholds_b, output_path):
     """Plot confusion matrices for selected diseases"""
     n_diseases = len(selected_indices)
     fig, axes = plt.subplots(n_diseases, 2, figsize=(10, 4*n_diseases))
@@ -354,17 +432,21 @@ def plot_confusion_matrices(labels, probs_dacnet, probs_baseline,
     plt.close()
 
 plot_confusion_matrices(
-    labels_true, probs_dacnet, probs_baseline,
-    indices, disease_list, dacnet_thresholds, baseline_thresholds,
+    labels_true, probs_dacnet_cb, probs_baseline,
+    indices_cb, disease_list, dacnet_cb_thresholds, baseline_thresholds,
     os.path.join(CONFIG["output_dir"], "confusion_matrices_representative.png")
 )
 
 # ==================== 3. Training Curves ====================
 print("\nGenerating training curves...")
 
-# Load training history
 history_dacnet = np.load(
     os.path.join(CONFIG["dacnet_results_dir"], "train_history.npy"),
+    allow_pickle=True
+).item()
+
+history_dacnet_cb = np.load(
+    os.path.join(CONFIG["dacnet_cb_results_dir"], "train_history_cb.npy"),
     allow_pickle=True
 ).item()
 
@@ -373,16 +455,27 @@ history_baseline = np.load(
     allow_pickle=True
 ).item()
 
-def plot_training_curves(history_dacnet, history_baseline, output_dir):
+def plot_training_curves(history_model, history_baseline, output_dir):
     """Plot training curves"""
+    required_keys = ["train_loss", "val_loss", "val_auc", "val_f1"]
+    missing_model = [k for k in required_keys for k in [k] if k not in history_model]
+    missing_baseline = [k for k in required_keys for k in [k] if k not in history_baseline]
+
+    if missing_model or missing_baseline:
+        print(
+            "Training history is incomplete, skip plotting training curves. "
+            f"Missing in model history: {missing_model}, "
+            f"missing in baseline history: {missing_baseline}"
+        )
+        return
+
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-    epochs_d = range(1, len(history_dacnet["train_loss"]) + 1)
+    epochs_d = range(1, len(history_model["train_loss"]) + 1)
     epochs_b = range(1, len(history_baseline["train_loss"]) + 1)
 
-    # Loss curve
-    axes[0].plot(epochs_d, history_dacnet["train_loss"], 'b-', linewidth=2, label='DacNet Train')
-    axes[0].plot(epochs_d, history_dacnet["val_loss"], 'b--', linewidth=2, label='DacNet Val')
+    axes[0].plot(epochs_d, history_model["train_loss"], 'b-', linewidth=2, label='Model Train')
+    axes[0].plot(epochs_d, history_model["val_loss"], 'b--', linewidth=2, label='Model Val')
     axes[0].plot(epochs_b, history_baseline["train_loss"], 'r-', linewidth=2, label='Baseline Train')
     axes[0].plot(epochs_b, history_baseline["val_loss"], 'r--', linewidth=2, label='Baseline Val')
     axes[0].set_xlabel('Epoch', fontsize=12)
@@ -391,8 +484,7 @@ def plot_training_curves(history_dacnet, history_baseline, output_dir):
     axes[0].legend(fontsize=10)
     axes[0].grid(True, alpha=0.3)
 
-    # AUC curve
-    axes[1].plot(epochs_d, history_dacnet["val_auc"], 'b-', linewidth=2, label='DacNet')
+    axes[1].plot(epochs_d, history_model["val_auc"], 'b-', linewidth=2, label='Model')
     axes[1].plot(epochs_b, history_baseline["val_auc"], 'r-', linewidth=2, label='Baseline')
     axes[1].set_xlabel('Epoch', fontsize=12)
     axes[1].set_ylabel('AUC', fontsize=12)
@@ -400,8 +492,7 @@ def plot_training_curves(history_dacnet, history_baseline, output_dir):
     axes[1].legend(fontsize=10)
     axes[1].grid(True, alpha=0.3)
 
-    # F1 curve
-    axes[2].plot(epochs_d, history_dacnet["val_f1"], 'b-', linewidth=2, label='DacNet')
+    axes[2].plot(epochs_d, history_model["val_f1"], 'b-', linewidth=2, label='Model')
     axes[2].plot(epochs_b, history_baseline["val_f1"], 'r-', linewidth=2, label='Baseline')
     axes[2].set_xlabel('Epoch', fontsize=12)
     axes[2].set_ylabel('F1 Score', fontsize=12)
@@ -415,7 +506,7 @@ def plot_training_curves(history_dacnet, history_baseline, output_dir):
     print(f"Training curves saved: {output_path}")
     plt.close()
 
-plot_training_curves(history_dacnet, history_baseline, CONFIG["output_dir"])
+plot_training_curves(history_dacnet_cb, history_baseline, CONFIG["output_dir"])
 
 # ==================== Generate comparison table ====================
 print("\nGenerating model comparison table...")
@@ -425,8 +516,10 @@ for disease in disease_list:
     comparison_table.append({
         "Disease": disease,
         "DacNet_AUC": dacnet_results["per_disease_auc"][disease],
+        "DacNet-CB+_AUC": dacnet_cb_results["per_disease_auc"][disease],
         "Baseline_AUC": baseline_results["per_disease_auc"][disease],
         "DacNet_F1": dacnet_results["per_disease_f1"][disease],
+        "DacNet-CB+_F1": dacnet_cb_results["per_disease_f1"][disease],
         "Baseline_F1": baseline_results["per_disease_f1"][disease],
     })
 
@@ -434,8 +527,10 @@ for disease in disease_list:
 comparison_table.append({
     "Disease": "Average",
     "DacNet_AUC": dacnet_results["test_auc"],
+    "DacNet-CB+_AUC": dacnet_cb_results["test_auc"],
     "Baseline_AUC": baseline_results["test_auc"],
     "DacNet_F1": dacnet_results["test_f1"],
+    "DacNet-CB+_F1": dacnet_cb_results["test_f1"],
     "Baseline_F1": baseline_results["test_f1"],
 })
 
